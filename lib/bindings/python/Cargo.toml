@@ -25,6 +25,7 @@ crate-type = ["cdylib", "rlib"]
 default = []
 media-ffmpeg = ["dynamo-llm/media-ffmpeg"]
 kv-indexer = ["dep:dynamo-kv-router", "dep:clap", "dep:tracing-subscriber"]
+nvtx = ["dynamo-runtime/nvtx"]
 
 [dependencies]
 dynamo-runtime = { path = "../../runtime" }
@@ -82,3 +83,8 @@ path = "rust/bin/kv_indexer.rs"
 required-features = ["kv-indexer"]
 
 [dev-dependencies]
+
+[profile.profiling]
+inherits = "release"
+debug = true
+strip = false
