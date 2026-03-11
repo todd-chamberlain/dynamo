@@ -558,7 +558,9 @@ class ManagedDeployment:
         """
         try:
             assert self._core_api is not None, "Kubernetes API not initialized"
-            label_selector = f"nvidia.com/dynamo-graph-deployment-name={self._deployment_name}"
+            label_selector = (
+                f"nvidia.com/dynamo-graph-deployment-name={self._deployment_name}"
+            )
             pods = await self._core_api.list_namespaced_pod(
                 self.namespace, label_selector=label_selector
             )
