@@ -7243,7 +7243,7 @@ func TestPropagateDGDAnnotations(t *testing.T) {
 
 func TestGenerateGrovePodCliqueSet_TopologyConstraints(t *testing.T) {
 	secretsRetriever := &mockSecretsRetriever{}
-	controllerConfig := controller_common.Config{}
+	operatorConfig := &configv1alpha1.OperatorConfiguration{}
 
 	tests := []struct {
 		name              string
@@ -7282,14 +7282,15 @@ func TestGenerateGrovePodCliqueSet_TopologyConstraints(t *testing.T) {
 				},
 				Spec: v1alpha1.DynamoGraphDeploymentSpec{
 					TopologyConstraint: &v1alpha1.TopologyConstraint{
-						PackDomain: v1alpha1.TopologyDomainZone,
+						TopologyProfile: "test-topology",
+						PackDomain:      v1alpha1.TopologyDomain("zone"),
 					},
 					Services: map[string]*v1alpha1.DynamoComponentDeploymentSharedSpec{
 						"Worker": {
 							ComponentType: commonconsts.ComponentTypeWorker,
 							Replicas:      ptr.To(int32(2)),
 							TopologyConstraint: &v1alpha1.TopologyConstraint{
-								PackDomain: v1alpha1.TopologyDomainRack,
+								PackDomain: v1alpha1.TopologyDomain("rack"),
 							},
 						},
 					},
@@ -7312,7 +7313,8 @@ func TestGenerateGrovePodCliqueSet_TopologyConstraints(t *testing.T) {
 				},
 				Spec: v1alpha1.DynamoGraphDeploymentSpec{
 					TopologyConstraint: &v1alpha1.TopologyConstraint{
-						PackDomain: v1alpha1.TopologyDomainZone,
+						TopologyProfile: "test-topology",
+						PackDomain:      v1alpha1.TopologyDomain("zone"),
 					},
 					Services: map[string]*v1alpha1.DynamoComponentDeploymentSharedSpec{
 						"Worker": {
@@ -7322,7 +7324,7 @@ func TestGenerateGrovePodCliqueSet_TopologyConstraints(t *testing.T) {
 								NodeCount: 4,
 							},
 							TopologyConstraint: &v1alpha1.TopologyConstraint{
-								PackDomain: v1alpha1.TopologyDomainBlock,
+								PackDomain: v1alpha1.TopologyDomain("block"),
 							},
 						},
 					},
@@ -7349,7 +7351,8 @@ func TestGenerateGrovePodCliqueSet_TopologyConstraints(t *testing.T) {
 			pcs, err := GenerateGrovePodCliqueSet(
 				context.Background(),
 				tt.deployment,
-				controllerConfig,
+				operatorConfig,
+				&controller_common.RuntimeConfig{},
 				secretsRetriever,
 				&RestartState{},
 				nil,

@@ -1359,6 +1359,7 @@ func GenerateGrovePodCliqueSet(
 
 	// Inject deployment-level topology constraint (PCS template).
 	// toGroveTopologyConstraint returns nil when input is nil, so this is a no-op without TAS.
+	// TODO: pass topologyProfile as ClusterTopology name once Grove supports per-PCS topology selection.
 	gangSet.Spec.Template.TopologyConstraint = toGroveTopologyConstraint(dynamoDeployment.Spec.TopologyConstraint)
 
 	// Validate kai-scheduler queue once if kai-scheduler is enabled

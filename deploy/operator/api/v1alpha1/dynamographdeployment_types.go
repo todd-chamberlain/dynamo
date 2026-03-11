@@ -78,8 +78,9 @@ type DynamoGraphDeploymentSpec struct {
 	Restart *Restart `json:"restart,omitempty"`
 
 	// TopologyConstraint is the deployment-level topology constraint.
-	// When set, applies a broad topology constraint across the whole deployment.
-	// Services without their own topologyConstraint inherit this value.
+	// When set, topologyProfile is required and names the ClusterTopology CR to use.
+	// packDomain is optional here — it can be omitted when only services carry constraints.
+	// Services without their own topologyConstraint inherit from this value.
 	// +optional
 	TopologyConstraint *TopologyConstraint `json:"topologyConstraint,omitempty"`
 }

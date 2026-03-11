@@ -17,10 +17,7 @@
 
 package v1alpha1
 
-import (
-	"sort"
-	"strings"
-)
+import "regexp"
 
 const (
 	// ConditionTypeTopologyLevelsAvailable indicates whether the topology levels
@@ -40,73 +37,30 @@ const (
 
 // TopologyConstraint defines topology placement requirements for a deployment or service.
 type TopologyConstraint struct {
-	// PackDomain specifies the topology domain for grouping replicas.
-	// Must be one of: region, zone, datacenter, block, rack, host, numa
-	PackDomain TopologyDomain `json:"packDomain"`
+	// TopologyProfile is the name of the ClusterTopology CR that defines the
+	// topology hierarchy for this deployment. Required at spec level when any
+	// topology constraint is set. Must not be set at service level (inherited).
+	// +optional
+	TopologyProfile string `json:"topologyProfile,omitempty"`
+
+	// PackDomain is the topology domain to pack pods within. Must match a
+	// domain defined in the referenced ClusterTopology CR.
+	// Optional at spec level (when only providing the profile for service-level
+	// constraints); required at service level.
+	// +optional
+	PackDomain TopologyDomain `json:"packDomain,omitempty"`
 }
 
-// TopologyDomain represents a level in the topology hierarchy.
-// These are Dynamo's own abstract vocabulary — they align with Grove today
-// because both use natural, user-friendly topology terms. For non-Grove
-// backends, a translation layer maps these to framework-specific values.
-// +kubebuilder:validation:Enum=region;zone;datacenter;block;rack;host;numa
+// TopologyDomain is a free-form topology level identifier.
+// Domain names are defined by the cluster admin in the ClusterTopology CR.
+// Common examples: "region", "zone", "datacenter", "block", "rack", "host", "numa".
+// Must match the regex ^[a-z0-9]+[a-z0-9-]*$ (lowercase alphanumeric, may contain hyphens).
+// +kubebuilder:validation:Pattern=`^[a-z0-9]+[a-z0-9-]*$`
 type TopologyDomain string
 
-const (
-	// TopologyDomainRegion represents the region level (broadest).
-	TopologyDomainRegion TopologyDomain = "region"
-	// TopologyDomainZone represents the zone level.
-	TopologyDomainZone TopologyDomain = "zone"
-	// TopologyDomainDataCenter represents the datacenter level.
-	TopologyDomainDataCenter TopologyDomain = "datacenter"
-	// TopologyDomainBlock represents the block level.
-	TopologyDomainBlock TopologyDomain = "block"
-	// TopologyDomainRack represents the rack level.
-	TopologyDomainRack TopologyDomain = "rack"
-	// TopologyDomainHost represents the host level.
-	TopologyDomainHost TopologyDomain = "host"
-	// TopologyDomainNuma represents the numa level (narrowest).
-	TopologyDomainNuma TopologyDomain = "numa"
-)
+var topologyDomainRegex = regexp.MustCompile(`^[a-z0-9]+[a-z0-9-]*$`)
 
-// topologyDomainOrder defines the hierarchical order from broadest to narrowest.
-// Values are spaced apart so new levels can be inserted between existing ones
-// without renumbering.
-var topologyDomainOrder = map[TopologyDomain]int{
-	TopologyDomainRegion:     100,
-	TopologyDomainZone:       200,
-	TopologyDomainDataCenter: 300,
-	TopologyDomainBlock:      400,
-	TopologyDomainRack:       500,
-	TopologyDomainHost:       600,
-	TopologyDomainNuma:       700,
-}
-
-// IsValidTopologyDomain returns true if the domain is a known TopologyDomain value.
-func IsValidTopologyDomain(d TopologyDomain) bool {
-	_, ok := topologyDomainOrder[d]
-	return ok
-}
-
-// ValidTopologyDomainNames returns the valid domain names sorted by hierarchy (broadest first).
-func ValidTopologyDomainNames() string {
-	type entry struct {
-		name  string
-		order int
-	}
-	entries := make([]entry, 0, len(topologyDomainOrder))
-	for d, o := range topologyDomainOrder {
-		entries = append(entries, entry{name: string(d), order: o})
-	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].order < entries[j].order })
-	names := make([]string, len(entries))
-	for i, e := range entries {
-		names[i] = e.name
-	}
-	return strings.Join(names, ", ")
-}
-
-// IsNarrowerOrEqual returns true if d is narrower than or equal to other in the topology hierarchy.
-func (d TopologyDomain) IsNarrowerOrEqual(other TopologyDomain) bool {
-	return topologyDomainOrder[d] >= topologyDomainOrder[other]
+// IsValidTopologyDomainFormat returns true if the domain matches the allowed format.
+func IsValidTopologyDomainFormat(d TopologyDomain) bool {
+	return topologyDomainRegex.MatchString(string(d))
 }

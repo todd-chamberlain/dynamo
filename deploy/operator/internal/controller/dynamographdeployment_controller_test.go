@@ -2107,7 +2107,7 @@ func TestPropagateTopologyCondition(t *testing.T) {
 					Annotations: map[string]string{commonconsts.KubeAnnotationEnableGrove: "false"},
 				},
 				Spec: v1alpha1.DynamoGraphDeploymentSpec{
-					TopologyConstraint: &v1alpha1.TopologyConstraint{PackDomain: v1alpha1.TopologyDomainRack},
+					TopologyConstraint: &v1alpha1.TopologyConstraint{TopologyProfile: "test-topology", PackDomain: v1alpha1.TopologyDomain("rack")},
 				},
 			},
 			groveEnabled:  false,
@@ -2118,7 +2118,7 @@ func TestPropagateTopologyCondition(t *testing.T) {
 			dgd: &v1alpha1.DynamoGraphDeployment{
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
 				Spec: v1alpha1.DynamoGraphDeploymentSpec{
-					TopologyConstraint: &v1alpha1.TopologyConstraint{PackDomain: v1alpha1.TopologyDomainRack},
+					TopologyConstraint: &v1alpha1.TopologyConstraint{TopologyProfile: "test-topology", PackDomain: v1alpha1.TopologyDomain("rack")},
 				},
 			},
 			pcs: &grovev1alpha1.PodCliqueSet{
@@ -2135,7 +2135,7 @@ func TestPropagateTopologyCondition(t *testing.T) {
 			dgd: &v1alpha1.DynamoGraphDeployment{
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
 				Spec: v1alpha1.DynamoGraphDeploymentSpec{
-					TopologyConstraint: &v1alpha1.TopologyConstraint{PackDomain: v1alpha1.TopologyDomainRack},
+					TopologyConstraint: &v1alpha1.TopologyConstraint{TopologyProfile: "test-topology", PackDomain: v1alpha1.TopologyDomain("rack")},
 				},
 			},
 			pcs: &grovev1alpha1.PodCliqueSet{
@@ -2162,7 +2162,7 @@ func TestPropagateTopologyCondition(t *testing.T) {
 			dgd: &v1alpha1.DynamoGraphDeployment{
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
 				Spec: v1alpha1.DynamoGraphDeploymentSpec{
-					TopologyConstraint: &v1alpha1.TopologyConstraint{PackDomain: v1alpha1.TopologyDomainRack},
+					TopologyConstraint: &v1alpha1.TopologyConstraint{TopologyProfile: "test-topology", PackDomain: v1alpha1.TopologyDomain("rack")},
 				},
 			},
 			pcs: &grovev1alpha1.PodCliqueSet{
@@ -2189,7 +2189,7 @@ func TestPropagateTopologyCondition(t *testing.T) {
 			dgd: &v1alpha1.DynamoGraphDeployment{
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
 				Spec: v1alpha1.DynamoGraphDeploymentSpec{
-					TopologyConstraint: &v1alpha1.TopologyConstraint{PackDomain: v1alpha1.TopologyDomainRack},
+					TopologyConstraint: &v1alpha1.TopologyConstraint{TopologyProfile: "test-topology", PackDomain: v1alpha1.TopologyDomain("rack")},
 				},
 			},
 			pcs: &grovev1alpha1.PodCliqueSet{
@@ -2215,9 +2215,10 @@ func TestPropagateTopologyCondition(t *testing.T) {
 			dgd: &v1alpha1.DynamoGraphDeployment{
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
 				Spec: v1alpha1.DynamoGraphDeploymentSpec{
+					TopologyConstraint: &v1alpha1.TopologyConstraint{TopologyProfile: "test-topology"},
 					Services: map[string]*v1alpha1.DynamoComponentDeploymentSharedSpec{
 						"worker": {
-							TopologyConstraint: &v1alpha1.TopologyConstraint{PackDomain: v1alpha1.TopologyDomainRack},
+							TopologyConstraint: &v1alpha1.TopologyConstraint{PackDomain: v1alpha1.TopologyDomain("rack")},
 						},
 					},
 				},
@@ -2236,7 +2237,7 @@ func TestPropagateTopologyCondition(t *testing.T) {
 			dgd: &v1alpha1.DynamoGraphDeployment{
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
 				Spec: v1alpha1.DynamoGraphDeploymentSpec{
-					TopologyConstraint: &v1alpha1.TopologyConstraint{PackDomain: v1alpha1.TopologyDomainRack},
+					TopologyConstraint: &v1alpha1.TopologyConstraint{TopologyProfile: "test-topology", PackDomain: v1alpha1.TopologyDomain("rack")},
 				},
 			},
 			pcs:           nil,
@@ -2266,10 +2267,8 @@ func TestPropagateTopologyCondition(t *testing.T) {
 			reconciler := &DynamoGraphDeploymentReconciler{
 				Client:   fakeClient,
 				Recorder: recorder,
-				Config: controller_common.Config{
-					Grove: controller_common.GroveConfig{
-						Enabled: tt.groveEnabled,
-					},
+				RuntimeConfig: &controller_common.RuntimeConfig{
+					GroveEnabled: tt.groveEnabled,
 				},
 			}
 

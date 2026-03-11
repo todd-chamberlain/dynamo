@@ -19,25 +19,21 @@ TAS is **opt-in**. Existing deployments without topology constraints continue to
 
 ## Topology Domains
 
-Dynamo defines a fixed set of abstract topology domains, ordered from broadest to narrowest:
+Topology domains are **free-form** identifiers defined by the cluster admin in the `ClusterTopology` CR. Common examples include `region`, `zone`, `datacenter`, `block`, `rack`, `host`, and `numa`, but any name matching the pattern `^[a-z0-9]+[a-z0-9-]*$` is valid.
 
-| Domain | Description |
-|--------|-------------|
-| `region` | Cloud region or geographic area (broadest) |
-| `zone` | Availability zone within a region |
-| `datacenter` | Physical datacenter |
-| `block` | Network block within a datacenter |
-| `rack` | Server rack |
-| `host` | Individual host / node |
-| `numa` | NUMA node within a host (narrowest) |
-
-These are Dynamo's own abstract terms. They map 1:1 to Grove's topology domain names today. For future non-Grove frameworks, a translation layer handles the mapping without changing the DGD API.
+Domain names must match exactly what is configured in the `ClusterTopology` CR referenced by `topologyProfile`. During DGD creation, the Dynamo webhook validates that every `packDomain` exists in the referenced `ClusterTopology`.
 
 When you specify a `packDomain`, the scheduler packs all replicas of the constrained component within a single instance of that domain. For example, `packDomain: rack` means "place all pods within the same rack."
 
+## Topology Profile
+
+Every DGD that uses topology constraints must reference a `ClusterTopology` CR by name via the `topologyProfile` field. This field is set at `spec.topologyConstraint` (the deployment level) and is inherited by all services — services must not set `topologyProfile` themselves.
+
+The `topologyProfile` tells the Dynamo operator and the underlying framework which topology hierarchy to use for scheduling and validation.
+
 ## Enabling TAS on a DGD
 
-Add a `topologyConstraint` field to your `DynamoGraphDeployment` at the deployment level, at the service level, or both. Each constraint specifies a `packDomain`.
+Add a `topologyConstraint` field to your `DynamoGraphDeployment` at the deployment level, at the service level, or both. The deployment level must include a `topologyProfile`. Each constraint specifies a `packDomain`.
 
 ### Example 1: Deployment-Level Constraint (Services Inherit)
 
@@ -50,6 +46,7 @@ metadata:
   name: my-llm
 spec:
   topologyConstraint:
+    topologyProfile: my-cluster-topology
     packDomain: zone
   services:
     VllmWorker:
@@ -80,7 +77,7 @@ spec:
 
 ### Example 2: Service-Level Constraint Only
 
-Only the specified service gets topology packing. Other services are scheduled without topology constraints.
+Only the specified service gets topology packing. Other services are scheduled without topology constraints. The deployment level must still set `topologyProfile`.
 
 ```yaml
 apiVersion: nvidia.com/v1alpha1
@@ -88,6 +85,8 @@ kind: DynamoGraphDeployment
 metadata:
   name: my-llm
 spec:
+  topologyConstraint:
+    topologyProfile: my-cluster-topology
   services:
     VllmWorker:
       dynamoNamespace: my-llm
@@ -121,7 +120,7 @@ spec:
 
 ### Example 3: Mixed (Deployment-Level Default + Per-Service Override)
 
-Set a broad constraint at the deployment level and a narrower override on specific services. Service-level constraints must be **equal to or narrower than** the deployment-level constraint.
+Set a broad constraint at the deployment level and a narrower override on specific services. Service-level constraints must be **equal to or narrower than** the deployment-level constraint (determined by the ordering in the `ClusterTopology` CR).
 
 ```yaml
 apiVersion: nvidia.com/v1alpha1
@@ -130,6 +129,7 @@ metadata:
   name: my-llm
 spec:
   topologyConstraint:
+    topologyProfile: my-cluster-topology
     packDomain: zone
   services:
     VllmWorker:
@@ -165,7 +165,9 @@ spec:
 
 ## Hierarchy Rules
 
-When **both** a deployment-level and a service-level `topologyConstraint` are set, the service's `packDomain` must be **equal to or narrower** than the deployment-level `packDomain`. The Dynamo webhook rejects the DGD if a service constraint is broader than the deployment constraint.
+When **both** a deployment-level and a service-level `topologyConstraint` are set, the service's `packDomain` must be **equal to or narrower** than the deployment-level `packDomain`. "Narrower" is determined by the ordering of levels in the referenced `ClusterTopology` CR — levels appearing later in the `spec.levels` array are considered narrower.
+
+The Dynamo webhook rejects the DGD at creation time if a service constraint is broader than the deployment constraint (when validating against a `ClusterTopology` CR).
 
 When only one level is set (deployment-level only or service-level only), no hierarchy check applies.
 
@@ -173,8 +175,17 @@ When only one level is set (deployment-level only or service-level only), no hie
 |---------------|----------|
 | `spec.topologyConstraint` set, service has none | Service inherits the deployment-level constraint |
 | `spec.topologyConstraint` set, service also set | Both applied; service must be narrower or equal |
-| `spec.topologyConstraint` not set, service set | Only that service gets a topology constraint |
+| `spec.topologyConstraint.topologyProfile` set, no `packDomain` at spec | Profile is provided for service-level constraints only |
 | Neither set | No topology constraints (default) |
+
+## Field Reference
+
+| Field | Level | Required | Description |
+|-------|-------|----------|-------------|
+| `topologyProfile` | `spec.topologyConstraint` | Yes (when any constraint is set) | Name of the `ClusterTopology` CR defining the topology hierarchy. |
+| `topologyProfile` | service-level `topologyConstraint` | Forbidden | Inherited from `spec.topologyConstraint`. Must not be set at service level. |
+| `packDomain` | `spec.topologyConstraint` | Optional | Default pack domain for services that don't specify their own. |
+| `packDomain` | service-level `topologyConstraint` | Required | Pack domain for this service. Must match a level in the `ClusterTopology` CR. |
 
 ## Multinode Considerations
 
@@ -201,6 +212,7 @@ Topology constraints **cannot be changed after the DGD is created**. This includ
 
 - Adding a topology constraint to a DGD or service that did not have one
 - Removing an existing topology constraint
+- Changing the `topologyProfile` value
 - Changing the `packDomain` value
 
 To change topology constraints, **delete and recreate** the DGD. This matches the behavior of the underlying framework, which enforces immutability on topology constraints for generated resources.
@@ -241,20 +253,24 @@ When topology levels become unavailable, Dynamo emits a **Warning** event on the
 
 ### DGD rejected: "ClusterTopology not found"
 
-The Dynamo webhook validates that the framework's topology resource exists when any topology constraint is set. If it cannot read the `ClusterTopology` CR:
+The Dynamo webhook validates that the `ClusterTopology` CR referenced by `topologyProfile` exists when any topology constraint is set. If it cannot read the `ClusterTopology` CR:
 
-- Verify that the cluster admin has created a `ClusterTopology` resource. See the [Grove documentation](https://github.com/ai-dynamo/grove) for setup.
+- Verify that the cluster admin has created the `ClusterTopology` resource named in `topologyProfile`. See the [Grove documentation](https://github.com/ai-dynamo/grove) for setup.
 - Verify that the Dynamo operator has RBAC to read `clustertopologies.grove.io` (included in the default Helm chart).
 
 ### DGD rejected: "packDomain not found in cluster topology"
 
-The specified `packDomain` does not exist as a level in the cluster's `ClusterTopology` CR. Check which domains are defined:
+The specified `packDomain` does not exist as a level in the referenced `ClusterTopology` CR. Check which domains are defined:
 
 ```bash
-kubectl get clustertopology -o yaml
+kubectl get clustertopology <topology-profile-name> -o yaml
 ```
 
 Ensure the domain you are requesting (e.g., `rack`) is configured in the `ClusterTopology` with a corresponding node label.
+
+### DGD rejected: "topologyProfile is required"
+
+Any DGD that has a topology constraint (at the spec or service level) must set `spec.topologyConstraint.topologyProfile` to the name of a `ClusterTopology` CR. Add the `topologyProfile` field to `spec.topologyConstraint`.
 
 ### Pods stuck in Pending
 
@@ -279,6 +295,6 @@ The DGD was deployed successfully, but the topology definition has since changed
 
 ### DGD rejected: hierarchy violation
 
-A service-level `packDomain` is broader than the deployment-level `packDomain`. For example, `spec.topologyConstraint.packDomain: rack` with a service specifying `zone` (which is broader) is invalid.
+A service-level `packDomain` is broader than the deployment-level `packDomain`. "Broader" and "narrower" are determined by the order of levels in the `ClusterTopology` CR — levels appearing earlier in `spec.levels` are broader.
 
 Ensure service-level constraints are equal to or narrower than the deployment-level constraint.
