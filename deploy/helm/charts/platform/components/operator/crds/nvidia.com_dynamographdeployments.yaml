@@ -11425,24 +11425,25 @@ spec:
                         type: string
                       topologyConstraint:
                         description: |-
-                          TopologyConstraint for this service. When both this and spec.topologyConstraint
-                          are set, this must be narrower than or equal to the spec-level constraint.
+                          TopologyConstraint for this service. topologyProfile is inherited from
+                          spec.topologyConstraint and must not be set here. packDomain is required.
+                          When both this and spec.topologyConstraint.packDomain are set, packDomain
+                          must be narrower than or equal to the spec-level packDomain.
                         properties:
                           packDomain:
                             description: |-
-                              PackDomain specifies the topology domain for grouping replicas.
-                              Must be one of: region, zone, datacenter, block, rack, host, numa
-                            enum:
-                              - region
-                              - zone
-                              - datacenter
-                              - block
-                              - rack
-                              - host
-                              - numa
+                              PackDomain is the topology domain to pack pods within. Must match a
+                              domain defined in the referenced ClusterTopology CR.
+                              Optional at spec level (when only providing the profile for service-level
+                              constraints); required at service level.
+                            pattern: ^[a-z0-9]+[a-z0-9-]*$
                             type: string
-                        required:
-                          - packDomain
+                          topologyProfile:
+                            description: |-
+                              TopologyProfile is the name of the ClusterTopology CR that defines the
+                              topology hierarchy for this deployment. Required at spec level when any
+                              topology constraint is set. Must not be set at service level (inherited).
+                            type: string
                         type: object
                       volumeMounts:
                         description: VolumeMounts references PVCs defined at the top level for volumes to be mounted by the component.
@@ -11475,24 +11476,24 @@ spec:
                 topologyConstraint:
                   description: |-
                     TopologyConstraint is the deployment-level topology constraint.
-                    When set, applies a broad topology constraint across the whole deployment.
-                    Services without their own topologyConstraint inherit this value.
+                    When set, topologyProfile is required and names the ClusterTopology CR to use.
+                    packDomain is optional here — it can be omitted when only services carry constraints.
+                    Services without their own topologyConstraint inherit from this value.
                   properties:
                     packDomain:
                       description: |-
-                        PackDomain specifies the topology domain for grouping replicas.
-                        Must be one of: region, zone, datacenter, block, rack, host, numa
-                      enum:
-                        - region
-                        - zone
-                        - datacenter
-                        - block
-                        - rack
-                        - host
-                        - numa
+                        PackDomain is the topology domain to pack pods within. Must match a
+                        domain defined in the referenced ClusterTopology CR.
+                        Optional at spec level (when only providing the profile for service-level
+                        constraints); required at service level.
+                      pattern: ^[a-z0-9]+[a-z0-9-]*$
                       type: string
-                  required:
-                    - packDomain
+                    topologyProfile:
+                      description: |-
+                        TopologyProfile is the name of the ClusterTopology CR that defines the
+                        topology hierarchy for this deployment. Required at spec level when any
+                        topology constraint is set. Must not be set at service level (inherited).
+                      type: string
                   type: object
               type: object
             status:

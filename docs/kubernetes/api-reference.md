@@ -398,7 +398,7 @@ _Appears in:_
 | `eppConfig` _[EPPConfig](#eppconfig)_ | EPPConfig defines EPP-specific configuration options for Endpoint Picker Plugin components.<br />Only applicable when ComponentType is "epp". |  | Optional: \{\} <br /> |
 | `frontendSidecar` _[FrontendSidecarSpec](#frontendsidecarspec)_ | FrontendSidecar configures an auto-generated frontend sidecar container.<br />When specified, the operator injects a fully configured frontend container<br />with all standard Dynamo environment variables, health probes, and ports.<br />This eliminates the need to manually specify these in extraPodSpec.containers. (GAIE) |  | Optional: \{\} <br /> |
 | `checkpoint` _[ServiceCheckpointConfig](#servicecheckpointconfig)_ | Checkpoint configures container checkpointing for this service.<br />When enabled, pods can be restored from a checkpoint files for faster cold start. |  | Optional: \{\} <br /> |
-| `topologyConstraint` _[TopologyConstraint](#topologyconstraint)_ | TopologyConstraint for this service. When both this and spec.topologyConstraint<br />are set, this must be narrower than or equal to the spec-level constraint. |  | Optional: \{\} <br /> |
+| `topologyConstraint` _[TopologyConstraint](#topologyconstraint)_ | TopologyConstraint for this service. topologyProfile is inherited from<br />spec.topologyConstraint and must not be set here. packDomain is required.<br />When both this and spec.topologyConstraint.packDomain are set, packDomain<br />must be narrower than or equal to the spec-level packDomain. |  | Optional: \{\} <br /> |
 
 
 #### DynamoComponentDeploymentSpec
@@ -440,7 +440,7 @@ _Appears in:_
 | `eppConfig` _[EPPConfig](#eppconfig)_ | EPPConfig defines EPP-specific configuration options for Endpoint Picker Plugin components.<br />Only applicable when ComponentType is "epp". |  | Optional: \{\} <br /> |
 | `frontendSidecar` _[FrontendSidecarSpec](#frontendsidecarspec)_ | FrontendSidecar configures an auto-generated frontend sidecar container.<br />When specified, the operator injects a fully configured frontend container<br />with all standard Dynamo environment variables, health probes, and ports.<br />This eliminates the need to manually specify these in extraPodSpec.containers. (GAIE) |  | Optional: \{\} <br /> |
 | `checkpoint` _[ServiceCheckpointConfig](#servicecheckpointconfig)_ | Checkpoint configures container checkpointing for this service.<br />When enabled, pods can be restored from a checkpoint files for faster cold start. |  | Optional: \{\} <br /> |
-| `topologyConstraint` _[TopologyConstraint](#topologyconstraint)_ | TopologyConstraint for this service. When both this and spec.topologyConstraint<br />are set, this must be narrower than or equal to the spec-level constraint. |  | Optional: \{\} <br /> |
+| `topologyConstraint` _[TopologyConstraint](#topologyconstraint)_ | TopologyConstraint for this service. topologyProfile is inherited from<br />spec.topologyConstraint and must not be set here. packDomain is required.<br />When both this and spec.topologyConstraint.packDomain are set, packDomain<br />must be narrower than or equal to the spec-level packDomain. |  | Optional: \{\} <br /> |
 
 
 #### DynamoGraphDeployment
@@ -640,7 +640,7 @@ _Appears in:_
 | `envs` _[EnvVar](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.28/#envvar-v1-core) array_ | Envs are environment variables applied to all services in the deployment unless<br />overridden by service-specific configuration. |  | Optional: \{\} <br /> |
 | `backendFramework` _string_ | BackendFramework specifies the backend framework (e.g., "sglang", "vllm", "trtllm"). |  | Enum: [sglang vllm trtllm] <br /> |
 | `restart` _[Restart](#restart)_ | Restart specifies the restart policy for the graph deployment. |  | Optional: \{\} <br /> |
-| `topologyConstraint` _[TopologyConstraint](#topologyconstraint)_ | TopologyConstraint is the deployment-level topology constraint.<br />When set, applies a broad topology constraint across the whole deployment.<br />Services without their own topologyConstraint inherit this value. |  | Optional: \{\} <br /> |
+| `topologyConstraint` _[TopologyConstraint](#topologyconstraint)_ | TopologyConstraint is the deployment-level topology constraint.<br />When set, topologyProfile is required and names the ClusterTopology CR to use.<br />packDomain is optional here — it can be omitted when only services carry constraints.<br />Services without their own topologyConstraint inherit from this value. |  | Optional: \{\} <br /> |
 
 
 #### DynamoGraphDeploymentStatus
@@ -1235,33 +1235,25 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `packDomain` _[TopologyDomain](#topologydomain)_ | PackDomain specifies the topology domain for grouping replicas.<br />Must be one of: region, zone, datacenter, block, rack, host, numa |  | Enum: [region zone datacenter block rack host numa] <br /> |
+| `topologyProfile` _string_ | TopologyProfile is the name of the ClusterTopology CR that defines the<br />topology hierarchy for this deployment. Required at spec level when any<br />topology constraint is set. Must not be set at service level (inherited). |  | Optional: \{\} <br /> |
+| `packDomain` _[TopologyDomain](#topologydomain)_ | PackDomain is the topology domain to pack pods within. Must match a<br />domain defined in the referenced ClusterTopology CR.<br />Optional at spec level (when only providing the profile for service-level<br />constraints); required at service level. |  | Pattern: `^[a-z0-9]+[a-z0-9-]*$` <br />Optional: \{\} <br /> |
 
 
 #### TopologyDomain
 
 _Underlying type:_ _string_
 
-TopologyDomain represents a level in the topology hierarchy.
-These are Dynamo's own abstract vocabulary — they align with Grove today
-because both use natural, user-friendly topology terms. For non-Grove
-backends, a translation layer maps these to framework-specific values.
+TopologyDomain is a free-form topology level identifier.
+Domain names are defined by the cluster admin in the ClusterTopology CR.
+Common examples: "region", "zone", "datacenter", "block", "rack", "host", "numa".
+Must match the regex ^[a-z0-9]+[a-z0-9-]*$ (lowercase alphanumeric, may contain hyphens).
 
 _Validation:_
-- Enum: [region zone datacenter block rack host numa]
+- Pattern: `^[a-z0-9]+[a-z0-9-]*$`
 
 _Appears in:_
 - [TopologyConstraint](#topologyconstraint)
 
-| Field | Description |
-| --- | --- |
-| `region` | TopologyDomainRegion represents the region level (broadest).<br /> |
-| `zone` | TopologyDomainZone represents the zone level.<br /> |
-| `datacenter` | TopologyDomainDataCenter represents the datacenter level.<br /> |
-| `block` | TopologyDomainBlock represents the block level.<br /> |
-| `rack` | TopologyDomainRack represents the rack level.<br /> |
-| `host` | TopologyDomainHost represents the host level.<br /> |
-| `numa` | TopologyDomainNuma represents the numa level (narrowest).<br /> |
 
 
 #### VolumeMount
