@@ -550,6 +550,46 @@ class ManagedDeployment:
         self._core_api = client.CoreV1Api(k8s_client)
         self._apps_v1 = client.AppsV1Api()
 
+    async def _get_pod_status_summary(self) -> str:
+        """Query pod statuses and return a human-readable summary for diagnostics.
+
+        Includes per-container waiting reasons (ImagePullBackOff, CrashLoopBackOff),
+        terminated reasons (OOMKilled, Error), and restart counts.
+        """
+        try:
+            assert self._core_api is not None, "Kubernetes API not initialized"
+            label_selector = f"nvidia.com/dynamo-graph-deployment-name={self._deployment_name}"
+            pods = await self._core_api.list_namespaced_pod(
+                self.namespace, label_selector=label_selector
+            )
+            lines = []
+            for pod in pods.items:
+                pod_name = pod.metadata.name
+                phase = pod.status.phase if pod.status else "Unknown"
+                container_lines = []
+                for cs in pod.status.container_statuses or []:
+                    if cs.state.waiting:
+                        state = f"Waiting: {cs.state.waiting.reason}"
+                        if cs.state.waiting.message:
+                            state += f" ({cs.state.waiting.message[:120]})"
+                    elif cs.state.terminated:
+                        state = f"Terminated: {cs.state.terminated.reason}"
+                        if cs.state.terminated.exit_code:
+                            state += f" (exit {cs.state.terminated.exit_code})"
+                    elif cs.state.running:
+                        state = "Running"
+                    else:
+                        state = "Unknown"
+                    restarts = cs.restart_count or 0
+                    container_lines.append(
+                        f"    {cs.name}: {state} (restarts: {restarts})"
+                    )
+                lines.append(f"  {pod_name} [{phase}]")
+                lines.extend(container_lines)
+            return "\n".join(lines) if lines else "  (no pods found)"
+        except Exception as e:
+            return f"  (failed to collect pod status: {e})"
+
     async def _wait_for_pods(self, label, expected, timeout=300):
         for _ in range(timeout):
             assert self._core_api is not None, "Kubernetes API not initialized"
@@ -696,7 +736,14 @@ class ManagedDeployment:
                     f"Unexpected exception while checking deployment status: {e}"
                 )
             await asyncio.sleep(sleep)
-        raise TimeoutError("Deployment failed to become ready within timeout")
+
+        elapsed = time.time() - start_time
+        pod_summary = await self._get_pod_status_summary()
+        raise TimeoutError(
+            f"Deployment {self._deployment_name} failed to become ready "
+            f"within {timeout}s (elapsed: {elapsed:.1f}s)\n"
+            f"Pod status at timeout:\n{pod_summary}"
+        )
 
     async def _restart_nats(self):
         NATS_STS_NAME = "dynamo-platform-nats"
