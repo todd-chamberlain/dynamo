@@ -143,8 +143,9 @@ impl RequestGuard {
         }
         self.freed = true;
 
-        if let Some(ref actions) = self.post_route_actions {
-            AgentController::execute_post_route(actions, &self.context_id);
+        // Take actions to prevent double-fire from Drop
+        if let Some(actions) = self.post_route_actions.take() {
+            AgentController::execute_post_route(&actions, &self.context_id);
         }
     }
 
@@ -167,6 +168,13 @@ impl RequestGuard {
 impl Drop for RequestGuard {
     fn drop(&mut self) {
         self.record_metrics();
+
+        // Fire any remaining post-route actions (e.g., close_session).
+        // If finish() already ran, post_route_actions is None (taken).
+        if let Some(actions) = self.post_route_actions.take() {
+            AgentController::execute_post_route(&actions, &self.context_id);
+        }
+
         if !self.freed {
             let chooser = self.chooser.clone();
             let context_id = self.context_id.clone();
@@ -460,9 +468,10 @@ impl AsyncEngine<SingleIn<PreprocessedRequest>, ManyOut<Annotated<LLMEngineOutpu
         let track_output_blocks = self.chooser.kv_router_config().router_track_output_blocks;
         let tracker = request.tracker.clone();
 
-        // Build deferred post-route actions via agent controller
+        // Build deferred post-route actions via agent controller.
+        // Fails fast if session_control.open is requested but the client can't be created.
         let post_route_actions = match self.agent_controller.as_ref() {
-            Some(ctrl) => Some(ctrl.on_routed(&request, instance_id, &context_id).await),
+            Some(ctrl) => Some(ctrl.on_routed(&request, instance_id, &context_id).await?),
             None => None,
         };
 

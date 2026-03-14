@@ -132,12 +132,15 @@ impl AgentController {
 
     /// Called after worker selection. Fires open_session if needed, captures
     /// deferred actions (pin, close) for RequestGuard::finish().
+    ///
+    /// Returns Err if session_control.action == Open but the session_control
+    /// client cannot be created (fail-fast: don't silently serve without isolation).
     pub async fn on_routed(
         &self,
         request: &PreprocessedRequest,
         instance_id: u64,
         context_id: &str,
-    ) -> PostRouteActions {
+    ) -> Result<PostRouteActions> {
         let routing = request.routing.as_ref();
 
         // Build pin action if cache_control TTL is present
@@ -160,6 +163,11 @@ impl AgentController {
         if let Some(ref sc) = session_control {
             match sc.action {
                 SessionAction::Open => {
+                    // Fail fast if we can't open the session -- don't silently
+                    // serve without isolation, as subsequent turns would target
+                    // a session that never existed.
+                    let client = self.get_session_control_client().await?;
+
                     // Insert affinity entry
                     let timeout = Duration::from_secs(sc.timeout);
                     self.session_affinity.insert(
@@ -169,22 +177,21 @@ impl AgentController {
                             expires_at: Instant::now() + timeout,
                         },
                     );
+
                     // Fire open_session to worker
-                    if let Ok(client) = self.get_session_control_client().await {
-                        Self::spawn_session_request(
-                            client,
-                            serde_json::json!({
-                                "action": "open_session",
-                                "session_id": sc.session_id,
-                                "timeout": sc.timeout,
-                                "capacity_of_str_len": 65536,
-                            }),
-                            instance_id,
-                            &sc.session_id,
-                            context_id,
-                            "open_session",
-                        );
-                    }
+                    Self::spawn_session_request(
+                        client,
+                        serde_json::json!({
+                            "action": "open_session",
+                            "session_id": sc.session_id,
+                            "timeout": sc.timeout,
+                            "capacity_of_str_len": 65536,
+                        }),
+                        instance_id,
+                        &sc.session_id,
+                        context_id,
+                        "open_session",
+                    );
                 }
                 SessionAction::Close => {
                     // Remove affinity entry immediately
@@ -201,10 +208,10 @@ impl AgentController {
             }
         }
 
-        PostRouteActions {
+        Ok(PostRouteActions {
             pin,
             session_close,
-        }
+        })
     }
 
     /// Execute deferred post-route actions. Called from RequestGuard::finish().
