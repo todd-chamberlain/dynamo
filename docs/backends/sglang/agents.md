@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 title: SGLang for Agentic Workloads
-subtitle: Priority scheduling, KV cache eviction policies, and cache pinning for multi-turn agentic serving
+subtitle: Priority scheduling, KV cache eviction, cache pinning, and session control for multi-turn agentic serving
 ---
 
 # SGLang for Agentic Workloads
@@ -298,6 +298,245 @@ A high `cached_tokens / prompt_tokens` ratio on subsequent turns confirms that t
 - **Pin budget**: Pinned tokens consume a budget controlled by `SGLANG_HICACHE_MAX_PINNED_RATIO` (fraction of host pool capacity). Requests exceeding this budget are rejected.
 - **No priority on pinned nodes**: `pin_prefix` does not set a priority on the radix tree nodes. All pinned nodes have equal eviction priority and fall back to LRU ordering among themselves when host memory fills.
 - **Requires stack restart for A/B testing**: Pins persist in cache across benchmark runs. When comparing pinned vs. unpinned performance, restart the full stack between phases to avoid false cache hits.
+
+## Session Control for Subagent KV Isolation (Experimental)
+
+> [!WARNING]
+> Session control is experimental. The API may change.
+
+Agentic orchestrators often spawn short-lived subagents (research, code execution, planning) that accumulate KV cache, use it for a few turns, then die. Under normal radix cache behavior, this ephemeral KV pollutes the tree and competes with the lead agent's long-lived prefix for eviction.
+
+Session control solves this by holding subagent KV in dedicated **streaming session slots** outside the radix tree. Session KV is invisible to eviction, has no L2 backup overhead, and is freed deterministically on close or timeout.
+
+### How It Works
+
+```mermaid
+sequenceDiagram
+    participant Orchestrator
+    participant Router as Dynamo Router
+    participant Worker as SGLang Worker
+    participant Cache as SessionAwareCache
+
+    Note over Orchestrator: Spawn subagent
+
+    Orchestrator->>Router: chat/completions + nvext.session_control{open, "sub-1"}
+    Router->>Router: Select best worker via KV overlap scoring
+    Router->>Router: Insert affinity: sub-1 -> worker_42
+    Router-)Worker: open_session(session_id="sub-1", streaming=True)
+    Worker->>Cache: Create SessionSlot for "sub-1"
+    Router->>Worker: Generate (turn 1)
+    Worker->>Cache: Turn 1: radix tree match (reuses lead agent prefix)
+    Worker-->>Router: Response (includes rid for next turn)
+    Router-->>Orchestrator: Response
+
+    Orchestrator->>Router: chat/completions + nvext.session_params{id: "sub-1", rid}
+    Router->>Router: Resolve affinity: sub-1 -> worker_42
+    Router->>Worker: Generate (turn 2, pinned to worker_42)
+    Worker->>Cache: Turn 2: O(1) restore from SessionSlot (skips tree)
+    Worker-->>Router: Response
+    Router-->>Orchestrator: Response
+
+    Note over Orchestrator: Subagent done
+
+    Orchestrator->>Router: chat/completions + nvext.session_control{close, "sub-1"}
+    Router->>Router: Remove affinity for sub-1
+    Router->>Worker: Generate (final turn)
+    Worker-->>Router: Response
+    Router-->>Orchestrator: Response
+
+    Note over Router,Worker: On stream completion
+    Router-)Worker: close_session(session_id="sub-1") [fire-and-forget]
+    Worker->>Cache: release_session -> free KV immediately
+```
+
+Key behaviors:
+
+- **Turn 1** goes through the normal radix tree, so the subagent shares the lead agent's pinned system prompt prefix.
+- **Turns 2+** skip the radix tree entirely. KV is restored from the `SessionSlot` in O(1).
+- **Session KV is invisible to eviction**. It cannot be evicted -- only freed by explicit close or inactivity timeout.
+- **Router-side affinity**: The router maintains a `session_id -> worker_id` mapping. Clients only need to send `session_id`, not `backend_instance_id`.
+
+### Enabling Session Control
+
+**SGLang worker:**
+
+```bash
+python -m dynamo.sglang \
+  --model-path <model> \
+  --enable-streaming-session \
+  ...
+```
+
+| Flag | Description |
+|------|-------------|
+| `--enable-streaming-session` | Wraps the radix cache with `SessionAwareCache`, enabling streaming session slots for subagent KV isolation. |
+
+**Router:**
+
+```bash
+python -m dynamo.frontend \
+  --router-mode kv \
+  --enable-cache-control \
+  ...
+```
+
+The `--enable-cache-control` flag enables the `AgentController`, which manages both cache pinning and session control.
+
+### Request Format
+
+#### Opening a session
+
+Include `session_control` in `nvext` on the first request of a subagent conversation:
+
+```json
+{
+    "model": "Qwen/Qwen3-14B-FP8",
+    "messages": [{"role": "user", "content": "Research topic X"}],
+    "nvext": {
+        "session_control": {
+            "action": "open",
+            "session_id": "sub-1",
+            "timeout": 60
+        }
+    }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `session_control.action` | `string` | `"open"` or `"close"`. |
+| `session_control.session_id` | `string` | Unique session identifier. |
+| `session_control.timeout` | `integer` | Inactivity timeout in seconds (default 120). Session auto-closes and KV is freed if no requests arrive within this window. Refreshed on every request. |
+
+#### Subsequent turns
+
+Pass `session_params` with the session ID and the `rid` from the previous turn's response:
+
+```json
+{
+    "model": "Qwen/Qwen3-14B-FP8",
+    "messages": [{"role": "user", "content": "Follow-up question"}],
+    "nvext": {
+        "session_params": {
+            "id": "sub-1",
+            "rid": "<rid from previous turn>"
+        }
+    }
+}
+```
+
+The router automatically resolves `session_params.id` to the correct worker via the affinity table. No `backend_instance_id` is needed.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `session_params.id` | `string` | Session identifier (must match a previously opened session). |
+| `session_params.rid` | `string` | Request ID from the previous turn's response. Used to resume from the correct position in the session's KV cache. |
+
+#### Closing a session
+
+Include `session_control` with `action: "close"` on the last request. The close is deferred until after generation completes:
+
+```json
+{
+    "model": "Qwen/Qwen3-14B-FP8",
+    "messages": [{"role": "user", "content": "Summarize findings"}],
+    "nvext": {
+        "session_control": {
+            "action": "close",
+            "session_id": "sub-1"
+        }
+    }
+}
+```
+
+### Python Example
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8000/v1", api_key="dummy")
+
+# Open a session for a subagent
+response = client.chat.completions.create(
+    model="Qwen/Qwen3-14B-FP8",
+    messages=[
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": "Research quantum error correction."},
+    ],
+    stream=True,
+    extra_body={
+        "nvext": {
+            "session_control": {
+                "action": "open",
+                "session_id": "research-sub-1",
+                "timeout": 120
+            }
+        }
+    }
+)
+
+# Collect response and extract rid
+assistant_response = ""
+rid = None
+for chunk in response:
+    if chunk.choices[0].delta.content:
+        assistant_response += chunk.choices[0].delta.content
+    # rid is returned in the response metadata
+
+# Continue the session -- router handles worker affinity
+response = client.chat.completions.create(
+    model="Qwen/Qwen3-14B-FP8",
+    messages=[
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": "Research quantum error correction."},
+        {"role": "assistant", "content": assistant_response},
+        {"role": "user", "content": "Now focus on surface codes."},
+    ],
+    stream=True,
+    extra_body={
+        "nvext": {
+            "session_params": {
+                "id": "research-sub-1",
+                "rid": rid
+            }
+        }
+    }
+)
+
+# Close the session on the last turn -- KV freed after generation
+response = client.chat.completions.create(
+    model="Qwen/Qwen3-14B-FP8",
+    messages=[
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": "Summarize your findings."},
+    ],
+    stream=True,
+    extra_body={
+        "nvext": {
+            "session_control": {
+                "action": "close",
+                "session_id": "research-sub-1"
+            }
+        }
+    }
+)
+```
+
+### Combining with Cache Pinning
+
+Session control and cache pinning are complementary:
+
+- **Cache pinning** (`nvext.cache_control`): Protects the lead agent's long-lived conversation prefix in the radix tree. Pinned nodes resist eviction for the TTL.
+- **Session control** (`nvext.session_control`): Isolates short-lived subagent KV outside the radix tree entirely.
+
+Use both together: pin the lead agent's prefix so it survives memory pressure, and open sessions for subagents so their ephemeral KV doesn't compete with the lead agent.
+
+### Limitations
+
+- **Streaming sessions only**: Sessions are opened with `streaming=True`, which means only sequential append operations are supported. Branching (`replace`), token-level rewind (`offset`), and `drop_previous_output` are not supported.
+- **Timeout is idle-based**: The timeout refreshes on every request. If a subagent pauses for a long tool call that exceeds the timeout, the session is reaped and KV is freed. The subagent must re-open the session and re-prefill.
+- **Memory pressure from concurrent sessions**: Each open session holds a `req_pool_idx` slot and GPU KV memory. Many concurrent sessions can starve prefill capacity. Use short timeouts for subagent sessions.
+- **No session metrics yet**: Active session count and held tokens are not yet exported as Prometheus metrics.
 
 ## See Also
 
