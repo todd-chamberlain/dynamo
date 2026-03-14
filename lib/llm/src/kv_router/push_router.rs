@@ -13,14 +13,12 @@ use dynamo_runtime::{
 };
 use futures::stream::{self, StreamExt};
 use serde_json::json;
-use tokio::sync::OnceCell;
 use tracing::Instrument;
 
 use crate::{
     kv_router::{
-        CacheControlClient, KvRouter,
-        cache_control::{PinState, create_cache_control_client, spawn_pin_prefix},
-        session_control::{SessionControlClient, create_session_control_client, spawn_open_session, spawn_close_session},
+        KvRouter,
+        agent_controller::{AgentRouterController, PostRouteActions},
         metrics::RouterRequestMetrics,
         protocols::{TokensWithHashes, WorkerWithDpRank},
     },
@@ -34,10 +32,9 @@ use crate::{
 pub struct KvPushRouter {
     inner: PushRouter<PreprocessedRequest, Annotated<LLMEngineOutput>>,
     pub chooser: Arc<KvRouter>,
-    /// Lazily initialized on first PIN request. `None` when cache_control is disabled.
-    cache_control_cell: Option<OnceCell<CacheControlClient>>,
-    /// Lazily initialized on first session request. `None` when cache_control is disabled.
-    session_control_cell: Option<OnceCell<SessionControlClient>>,
+    /// Unified agent controller for cache_control + session_control.
+    /// None when router_enable_cache_control is disabled.
+    agent_controller: Option<Arc<AgentRouterController>>,
 }
 
 /// Result of worker selection containing instance ID, dp_rank, and overlap amount.
@@ -45,13 +42,6 @@ struct WorkerSelection {
     instance_id: u64,
     dp_rank: u32,
     overlap_amount: u32,
-}
-
-/// State captured at routing time for a deferred session close after generation completes.
-struct SessionCloseState {
-    session_id: String,
-    sc_client: SessionControlClient,
-    instance_id: u64,
 }
 
 /// Drop guard that manages the full lifecycle of a routed request:
@@ -75,10 +65,8 @@ struct RequestGuard {
     isl_tokens: usize,
     block_size: usize,
     expected_output_tokens: Option<u32>,
-    // PIN state: set when cache_control TTL is present and a cc_client exists
-    pin_state: Option<PinState>,
-    // Session close state: set when session_control.action == Close
-    session_close_state: Option<SessionCloseState>,
+    // Deferred post-route actions (pin prefix, close session)
+    post_route_actions: Option<PostRouteActions>,
 }
 
 impl RequestGuard {
@@ -155,18 +143,8 @@ impl RequestGuard {
         }
         self.freed = true;
 
-        if let Some(ref pin) = self.pin_state {
-            spawn_pin_prefix(
-                Some(&pin.cc_client),
-                &pin.token_ids,
-                pin.instance_id,
-                &self.context_id,
-                pin.ttl_seconds,
-            );
-        }
-
-        if let Some(ref state) = self.session_close_state {
-            spawn_close_session(&state.sc_client, &state.session_id, state.instance_id, &self.context_id);
+        if let Some(ref actions) = self.post_route_actions {
+            AgentRouterController::execute_post_route(actions, &self.context_id);
         }
     }
 
@@ -215,23 +193,17 @@ impl KvPushRouter {
         // and the standalone router create KvPushRouter, so this covers both.
         RouterRequestMetrics::from_component(chooser.client().endpoint.component());
 
-        let cache_control_cell = if chooser.kv_router_config().router_enable_cache_control {
-            tracing::info!("Cache control enabled for PIN operations (lazy init)");
-            Some(OnceCell::new())
+        let agent_controller = if chooser.kv_router_config().router_enable_cache_control {
+            let component = chooser.client().endpoint.component().clone();
+            Some(Arc::new(AgentRouterController::new(component)))
         } else {
             None
         };
-        let session_control_cell = if chooser.kv_router_config().router_enable_cache_control {
-            tracing::info!("Session control enabled for subagent isolation (lazy init)");
-            Some(OnceCell::new())
-        } else {
-            None
-        };
+
         KvPushRouter {
             inner,
             chooser,
-            cache_control_cell,
-            session_control_cell,
+            agent_controller,
         }
     }
 
@@ -375,13 +347,23 @@ impl AsyncEngine<SingleIn<PreprocessedRequest>, ManyOut<Annotated<LLMEngineOutpu
     /// prefill/completion lifecycle for proper KV cache management.
     async fn generate(
         &self,
-        request: SingleIn<PreprocessedRequest>,
+        mut request: SingleIn<PreprocessedRequest>,
     ) -> Result<ManyOut<Annotated<LLMEngineOutput>>, Error> {
         // Extract context ID for request tracking
         let context_id = request.context().id().to_string();
 
         // Simple query-only detection: presence of query_instance_id annotation means query-only mode
         let is_query_only = request.get_annotation_value("query_instance_id").is_some();
+
+        // Resolve session affinity: if the request has a session_id, inject the
+        // pinned worker_id into backend_instance_id before worker selection.
+        if let Some(ref ctrl) = self.agent_controller {
+            if request.routing.as_ref().and_then(|r| r.backend_instance_id).is_none() {
+                if let Some(worker_id) = ctrl.resolve_session_worker(&request) {
+                    request.routing_mut().backend_instance_id = Some(worker_id);
+                }
+            }
+        }
 
         // Get phase from tracker (defaults to Aggregated if no tracker or phase not set)
         let phase = request
@@ -478,66 +460,11 @@ impl AsyncEngine<SingleIn<PreprocessedRequest>, ManyOut<Annotated<LLMEngineOutpu
         let track_output_blocks = self.chooser.kv_router_config().router_track_output_blocks;
         let tracker = request.tracker.clone();
 
-        // Extract pin state: lazily init cache_control client on first PIN request
-        let pin_state: Option<PinState> = async {
-            let ttl = request.routing.as_ref().and_then(|r| r.cache_control_ttl)?;
-            let cell = self.cache_control_cell.as_ref()?;
-            let component = self.chooser.client().endpoint.component().clone();
-            let client = cell
-                .get_or_try_init(|| create_cache_control_client(&component))
-                .await
-                .inspect_err(|e| tracing::warn!("Failed to create cache_control client: {e}"))
-                .ok()?
-                .clone();
-            Some(PinState {
-                token_ids: request.token_ids.clone(),
-                cc_client: client,
-                instance_id,
-                ttl_seconds: ttl,
-            })
-        }
-        .await;
-
-        // Handle session control: open session on selected worker before routing
-        let session_control = request.routing.as_ref().and_then(|r| r.session_control.clone());
-        if let Some(ref sc) = session_control {
-            use crate::protocols::openai::nvext::SessionAction;
-            if sc.action == SessionAction::Open {
-                if let Some(cell) = self.session_control_cell.as_ref() {
-                    let component = self.chooser.client().endpoint.component().clone();
-                    if let Ok(client) = cell
-                        .get_or_try_init(|| create_session_control_client(&component))
-                        .await
-                    {
-                        spawn_open_session(client, &sc.session_id, instance_id, sc.timeout, &context_id);
-                    } else {
-                        tracing::warn!("Failed to create session_control client for open");
-                    }
-                }
-            }
-        }
-
-        let session_close_state: Option<SessionCloseState> = async {
-            let sc = session_control.as_ref()?;
-            use crate::protocols::openai::nvext::SessionAction;
-            if sc.action != SessionAction::Close {
-                return None;
-            }
-            let cell = self.session_control_cell.as_ref()?;
-            let component = self.chooser.client().endpoint.component().clone();
-            let client = cell
-                .get_or_try_init(|| create_session_control_client(&component))
-                .await
-                .inspect_err(|e| tracing::warn!("Failed to create session_control client: {e}"))
-                .ok()?
-                .clone();
-            Some(SessionCloseState {
-                session_id: sc.session_id.clone(),
-                sc_client: client,
-                instance_id,
-            })
-        }
-        .await;
+        // Build deferred post-route actions via agent controller
+        let post_route_actions = match self.agent_controller.as_ref() {
+            Some(ctrl) => Some(ctrl.on_routed(&request, instance_id, &context_id).await),
+            None => None,
+        };
 
         let (mut backend_input, context) = request.into_parts();
         backend_input.routing_mut().dp_rank = Some(dp_rank);
@@ -580,8 +507,7 @@ impl AsyncEngine<SingleIn<PreprocessedRequest>, ManyOut<Annotated<LLMEngineOutpu
                 isl_tokens,
                 block_size,
                 expected_output_tokens,
-                pin_state,
-                session_close_state,
+                post_route_actions,
             };
 
             loop {
