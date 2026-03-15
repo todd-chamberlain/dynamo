@@ -119,57 +119,61 @@ async def init_omni_stage(
 
 
 def _create_engine(model: str, stage_config, stage_type: str):
-    """Create OmniLLM or OmniDiffusion engine from stage config."""
-    engine_args = stage_config.engine_args
+    """Create OmniLLM or OmniDiffusion engine from stage config.
+
+    Follows the same pattern as vLLM-Omni's omni_stage.py worker:
+    1. Convert engine_args to dict
+    2. Resolve model_subdir/tokenizer_subdir paths
+    3. Resolve worker_cls/scheduler_cls strings
+    4. Filter to valid kwargs for the engine class
+    5. Create engine with all filtered kwargs
+    """
+    from vllm_omni.entrypoints.stage_utils import (
+        _resolve_model_tokenizer_paths,
+        _resolve_worker_cls,
+        _to_dict,
+    )
+
+    engine_args = _to_dict(stage_config.engine_args)
+
+    if stage_type != "diffusion":
+        _resolve_worker_cls(engine_args)
+
+    # Handle model_subdir, tokenizer_subdir (e.g. GLM-Image)
+    model = _resolve_model_tokenizer_paths(model, engine_args)
 
     if stage_type == "llm":
-        from vllm_omni.entrypoints.omni_llm import OmniLLM
+        from vllm_omni.entrypoints.omni_llm import OmniEngineArgs, OmniLLM
+        from vllm_omni.entrypoints.stage_utils import filter_dataclass_kwargs
 
-        kwargs = _engine_kwargs_from_config(engine_args)
-        kwargs["model"] = model
-        return OmniLLM(**kwargs)
+        engine_args = filter_dataclass_kwargs(OmniEngineArgs, engine_args)
+        engine_args.pop("model", None)
+        return OmniLLM(model=model, **engine_args)
 
     elif stage_type == "diffusion":
+        from vllm_omni.diffusion.data import OmniDiffusionConfig
         from vllm_omni.entrypoints.omni_diffusion import OmniDiffusion
+        from vllm_omni.entrypoints.stage_utils import (
+            filter_dataclass_kwargs,
+            load_func_from_config,
+        )
 
-        kwargs = _diffusion_kwargs_from_config(engine_args, model)
-        return OmniDiffusion(**kwargs)
+        cfg_kv_collect_func = load_func_from_config(
+            getattr(stage_config, "cfg_kv_collect_func", None)
+        )
+        engine_args = filter_dataclass_kwargs(OmniDiffusionConfig, engine_args)
+        engine_args.pop("model_stage", None)
+        engine_args.pop("model", None)
+        return OmniDiffusion(
+            model=model,
+            stage_id=stage_config.stage_id,
+            engine_input_source=getattr(stage_config, "engine_input_source", []),
+            cfg_kv_collect_func=cfg_kv_collect_func,
+            **engine_args,
+        )
 
     else:
         raise ValueError(f"Unknown stage_type: {stage_type}")
-
-
-def _engine_kwargs_from_config(engine_args) -> dict:
-    """Extract OmniLLM kwargs from stage engine_args."""
-    kwargs = {}
-    _copy_if_set(kwargs, engine_args, "trust_remote_code")
-    _copy_if_set(kwargs, engine_args, "gpu_memory_utilization")
-    _copy_if_set(kwargs, engine_args, "enforce_eager")
-    _copy_if_set(kwargs, engine_args, "tensor_parallel_size")
-    _copy_if_set(kwargs, engine_args, "pipeline_parallel_size")
-    _copy_if_set(kwargs, engine_args, "max_num_batched_tokens")
-    _copy_if_set(kwargs, engine_args, "max_num_seqs")
-    _copy_if_set(kwargs, engine_args, "max_model_len")
-    _copy_if_set(kwargs, engine_args, "enable_prefix_caching")
-    _copy_if_set(kwargs, engine_args, "distributed_executor_backend")
-    _copy_if_set(kwargs, engine_args, "worker_cls")
-    _copy_if_set(kwargs, engine_args, "scheduler_cls")
-    return kwargs
-
-
-def _diffusion_kwargs_from_config(engine_args, model: str) -> dict:
-    """Extract OmniDiffusion kwargs from stage engine_args."""
-    kwargs = {"model": model}
-    _copy_if_set(kwargs, engine_args, "trust_remote_code")
-    _copy_if_set(kwargs, engine_args, "enforce_eager")
-    _copy_if_set(kwargs, engine_args, "num_gpus")
-    return kwargs
-
-
-def _copy_if_set(target: dict, source, key: str):
-    val = getattr(source, key, None)
-    if val is not None:
-        target[key] = val
 
 
 def _resolve_model_type(final_output_type: str) -> ModelType:
