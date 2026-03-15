@@ -128,9 +128,9 @@ def _create_engine(model: str, stage_config, stage_type: str):
     4. Filter to valid kwargs for the engine class
     5. Create engine with all filtered kwargs
     """
+    from vllm_omni.entrypoints.omni_stage import _resolve_worker_cls
     from vllm_omni.entrypoints.stage_utils import (
         _resolve_model_tokenizer_paths,
-        _resolve_worker_cls,
         _to_dict,
     )
 
@@ -143,8 +143,9 @@ def _create_engine(model: str, stage_config, stage_type: str):
     model = _resolve_model_tokenizer_paths(model, engine_args)
 
     if stage_type == "llm":
-        from vllm_omni.entrypoints.omni_llm import OmniEngineArgs, OmniLLM
-        from vllm_omni.entrypoints.stage_utils import filter_dataclass_kwargs
+        from vllm_omni.engine.arg_utils import OmniEngineArgs
+        from vllm_omni.entrypoints.omni_llm import OmniLLM
+        from vllm_omni.entrypoints.utils import filter_dataclass_kwargs
 
         engine_args = filter_dataclass_kwargs(OmniEngineArgs, engine_args)
         engine_args.pop("model", None)
@@ -153,10 +154,8 @@ def _create_engine(model: str, stage_config, stage_type: str):
     elif stage_type == "diffusion":
         from vllm_omni.diffusion.data import OmniDiffusionConfig
         from vllm_omni.entrypoints.omni_diffusion import OmniDiffusion
-        from vllm_omni.entrypoints.stage_utils import (
-            filter_dataclass_kwargs,
-            load_func_from_config,
-        )
+        from vllm_omni.entrypoints.stage_utils import load_func_from_config
+        from vllm_omni.entrypoints.utils import filter_dataclass_kwargs
 
         cfg_kv_collect_func = load_func_from_config(
             getattr(stage_config, "cfg_kv_collect_func", None)
