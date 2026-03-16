@@ -10,7 +10,6 @@ use crate::preprocessor::media::MediaDecoder;
 use crate::protocols::openai::{
     chat_completions::NvCreateChatCompletionRequest, completions::NvCreateCompletionRequest,
 };
-use dynamo_async_openai::types::ChatCompletionToolChoiceOption;
 use tracing;
 
 use crate::preprocessor::prompt::{PromptInput, TextInput, TokenInput};
@@ -221,16 +220,14 @@ impl OAIChatLikeRequest for NvCreateChatCompletionRequest {
     }
 
     fn tools(&self) -> Option<Value> {
-        self.inner.tools.as_ref()?;
-        // When tool_choice is "none", strip tools from the template so the model
-        // doesn't see them and generate raw XML tool calls in its response.
-        if matches!(
-            self.inner.tool_choice,
-            Some(ChatCompletionToolChoiceOption::None)
-        ) {
-            return None;
+        if self.inner.tools.is_none() {
+            None
+        } else {
+            // Try to fix the tool schema if it is missing type and properties
+            Some(may_be_fix_tool_schema(
+                serde_json::to_value(&self.inner.tools).unwrap(),
+            )?)
         }
-        may_be_fix_tool_schema(serde_json::to_value(&self.inner.tools).unwrap())
     }
 
     fn tool_choice(&self) -> Option<Value> {
@@ -349,6 +346,16 @@ impl OAIPromptFormatter for HfTokenizerConfigJsonFormatter {
         let mixins = Value::from_dyn_object(self.mixins.clone());
 
         let tools = req.tools();
+        // Strip tools when tool_choice is "none" and the flag is enabled, so the model
+        // doesn't see tool definitions and generate raw XML tool calls in its response.
+        let tools = if self.exclude_tools_when_tool_choice_none {
+            match req.tool_choice() {
+                Some(ref tc) if tc.as_str() == Some("none") => None,
+                _ => tools,
+            }
+        } else {
+            tools
+        };
         // has_tools should be true if tools is a non-empty array
         let has_tools = tools.as_ref().and_then(|v| v.len()).is_some_and(|l| l > 0);
         let add_generation_prompt = req.should_add_generation_prompt();
