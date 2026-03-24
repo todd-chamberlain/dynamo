@@ -24,6 +24,10 @@ navigation:
         path: ../pages-dev/getting-started/quickstart.md
       - page: Introduction
         path: ../pages-dev/getting-started/introduction.md
+      - page: Local Installation
+        path: ../pages-dev/getting-started/local-installation.md
+      - page: Building from Source
+        path: ../pages-dev/getting-started/building-from-source.md
       - page: Contribution Guide
         path: ../pages-dev/contribution-guide.md
   # ==================== Resources ====================
@@ -37,6 +41,8 @@ navigation:
         path: ../pages-dev/reference/release-artifacts.md
       - page: Examples
         path: ../pages-dev/getting-started/examples.md
+      - page: Glossary
+        path: ../pages-dev/reference/glossary.md
   # ==================== Kubernetes Deployment ====================
   - section: Kubernetes Deployment
     contents:
@@ -61,6 +67,8 @@ navigation:
             path: ../pages-dev/kubernetes/autoscaling.md
           - page: Rolling Update
             path: ../pages-dev/kubernetes/rolling-update.md
+          - page: Developing with Tilt
+            path: ../pages-dev/kubernetes/tilt-dev-setup.md
           - page: Inference Gateway (GAIE)
             path: ../pages-dev/kubernetes/inference-gateway.md
           - page: Snapshot
@@ -79,6 +87,8 @@ navigation:
             path: ../pages-dev/kubernetes/deployment/multinode-deployment.md
           - page: Grove
             path: ../pages-dev/kubernetes/grove.md
+          - page: Topology Aware Scheduling
+            path: ../pages-dev/kubernetes/topology-aware-scheduling.md
   # ==================== User Guides ====================
   - section: User Guides
     contents:
@@ -90,6 +100,12 @@ navigation:
         path: ../pages-dev/components/kvbm/kvbm-guide.md
       - page: Dynamo Benchmarking
         path: ../pages-dev/benchmarks/benchmarking.md
+      - page: Mocker Offline Trace Replay
+        path: ../pages-dev/benchmarks/mocker-trace-replay.md
+      - section: Testing
+        contents:
+          - page: Mocker
+            path: ../pages-dev/mocker/mocker.md
       - section: Multimodal
         path: ../pages-dev/features/multimodal/README.md
         contents:
@@ -324,8 +340,6 @@ navigation:
       - page: Model Caching with Fluid
         path: ../pages-dev/kubernetes/model-caching-with-fluid.md
       # -- Reference --
-      - page: Glossary
-        path: ../pages-dev/reference/glossary.md
       - page: Tuning Disaggregated Performance
         path: ../pages-dev/performance/tuning.md
       # -- Frontend (hidden sub-pages) --
